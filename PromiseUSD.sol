@@ -6,7 +6,7 @@ pragma solidity 0.8.20;
 
     Main functionality:
         - store USDC
-        - release USDC form XUSD, but mint pUSD tokens into XUSD to maintain value
+        - release USDC from XUSD, but mint pUSD tokens into XUSD to maintain value
         - release USDC from self
         - pay back USDC into XUSD, burn pUSD tokens to maintain XUSD value
 
@@ -15,7 +15,7 @@ pragma solidity 0.8.20;
 
         Deposit USDC:
             - if PUSD has a balance in XUSD, use USDC to pay that balance back
-            - else, release USDC from XUSD, minting PUSD tokens into XUSD to maintain value
+            - else, store USDC
             - then, send cross chain message to XUSD on other chain, telling to to `Release`
 
         Release:
