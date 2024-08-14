@@ -425,14 +425,8 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
     // Token Activation
     bool public tokenActivated;
 
-    // PCS Router
-    IUniswapV2Router02 public router = IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
-
     // Underlying Asset Is Underlying
     IERC20 public constant underlying = IERC20(0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d);
-
-    // Swap Path From Native -> Underlying
-    address[] private path;
 
     // Fees
     uint256 public mintFee     = 98000;  // 2% mint fee
@@ -463,11 +457,6 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
     // initialize some stuff
     constructor(address feeTo_) {
         require(goodAddress(feeTo_) == true, "Invalid Address!");
-
-        // set swap path
-        path = new address[](2);
-        path[0] = router.WETH();
-        path[1] = underlying_;
 
         // set fee recipient setter
         feeTo = feeTo_;
@@ -528,12 +517,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         address recipient,
         uint256 amount
     ) external override nonReentrant returns (bool) {
-        if (recipient == msg.sender) {
-            _sell(amount, msg.sender);
-            return true;
-        } else {
-            return _transferFrom(msg.sender, recipient, amount);
-        }
+        return _transferFrom(msg.sender, recipient, amount);    
     }
 
     /** Transfer Function */
@@ -574,8 +558,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         uint256 oldPrice = _calculatePrice();
 
         // amount to give recipient
-        uint256 tAmount = (isTransferFeeExempt[sender] ||
-            isTransferFeeExempt[recipient])
+        uint256 tAmount = (isTransferFeeExempt[sender] || isTransferFeeExempt[recipient])
             ? amount
             : amount * transferFee / feeDenominator;
 
@@ -589,7 +572,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         _balances[recipient] += tAmount;
 
         // burn the tax
-        if (tax > 0 && _totalSupply > 0) {
+        if (tax > 0) {
             // Take Fee
             _takeFee(tax);
             _totalSupply -= tax;
@@ -604,32 +587,14 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         return true;
     }
 
-    /**
-        Mint WhiteLabel Tokens With The Native Token ( Smart Chain Native )
-        This will purchase underlying with Native received
-        It will then mint tokens to `recipient` based on the number of stable coins received
-        `minOut` should be set to avoid the Transaction being front runned
-
-        @param recipient Account to receive minted WhiteLabel Tokens
-        @param minOut minimum amount out from Native -> underlying - prevents front run attacks
-        @return received number of WhiteLabel tokens received
-     */
-    function mintWithNative(
-        address recipient,
-        uint256 minOut
-    ) external payable returns (uint256) {
-        _checkGarbageCollector();
-        return _mintWithNative(recipient, minOut);
-    }
-
     /** 
-        Mint WhiteLabel Tokens For `recipient` By Depositing `underlying` Into The Contract
+        Mint XUSD Tokens For `recipient` By Depositing `underlying` Into The Contract
             Requirements:
                 Approval from the `underlying` token prior to purchase
         
-        @param numTokens number of underlying tokens to mint WhiteLabel with
-        @param recipient Account to receive minted WhiteLabel tokens
-        @return tokensMinted number of WhiteLabel tokens minted
+        @param numTokens number of underlying tokens to mint XUSD with
+        @param recipient Account to receive minted XUSD tokens
+        @return tokensMinted number of XUSD tokens minted
     */
     function mintWithBacking(
         uint256 numTokens,
@@ -640,19 +605,19 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
     }
 
     /** 
-        Burns Sender's WhiteLabel Tokens and redeems their value in underlying
-        @param tokenAmount Number of WhiteLabel Tokens To Redeem, Must be greater than 0
+        Burns Sender's XUSD Tokens and redeems their value in underlying
+        @param tokenAmount Number of Tokens To Redeem, Must be greater than 0
     */
-    function sell(uint256 tokenAmount) external nonReentrant returns (uint256) {
+    function redeem(uint256 tokenAmount) external nonReentrant returns (uint256) {
         return _sell(tokenAmount, msg.sender);
     }
 
     /** 
-        Burns Sender's WhiteLabel Tokens and redeems their value in `underlying` for `recipient`
-        @param tokenAmount Number of WhiteLabel Tokens To Redeem, Must be greater than 0
+        Burns Sender's XUSD Tokens and redeems their value in `underlying` for `recipient`
+        @param tokenAmount Number of XUSD Tokens To Redeem, Must be greater than 0
         @param recipient Recipient Of underlying token transfer, Must not be address(0)
     */
-    function sell(
+    function redeemTo(
         uint256 tokenAmount,
         address recipient
     ) external nonReentrant returns (uint256) {
@@ -662,7 +627,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
     /** 
         Allows A User To Erase Their Holdings From Supply 
         DOES NOT REDEEM UNDERLYING ASSET FOR USER
-        @param amount Number of WhiteLabel Tokens To Burn
+        @param amount Number of XUSD Tokens To Burn
     */
     function burn(uint256 amount) external nonReentrant {
         // get balance of caller
@@ -678,6 +643,21 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         _requirePriceRises(oldPrice);
         // Emit Call
         emit Burn(msg.sender, amount);
+    }
+
+    /**
+        Logs a donation (price increase)
+     */
+    function donate(uint256 amount) external nonReentrant {
+        
+        // Track Change In Price
+        uint256 oldPrice = _calculatePrice();
+        
+        // Transfer in donation
+        _transferIn(amount);
+
+        // require price rises
+        _requirePriceRises(oldPrice);
     }
 
     // Flashloan function
@@ -776,37 +756,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
     //////  INTERNAL FUNCTIONS  ///////
     ///////////////////////////////////
 
-    /** Purchases WhiteLabel Token and Deposits Them in Recipient's Address */
-    function _mintWithNative(
-        address recipient,
-        uint256 minOut
-    ) internal nonReentrant returns (uint256) {
-        require(msg.value > 0, "Zero Value");
-        require(recipient != address(0), "Zero Address");
-        require(
-            tokenActivated || msg.sender == this.getOwner(),
-            "Token Not Activated"
-        );
-
-        // calculate price change
-        uint256 oldPrice = _calculatePrice();
-
-        // previous backing
-        uint256 previousBacking = underlying.balanceOf(address(this));
-
-        // swap Native for stable
-        uint256 received = _purchaseUnderlying(minOut);
-
-        // if this is the first purchase, use new amount
-        uint256 relevantBacking = previousBacking == 0
-            ? underlying.balanceOf(address(this))
-            : previousBacking;
-
-        // mint to recipient
-        return _mintTo(recipient, received, relevantBacking, oldPrice);
-    }
-
-    /** Stake Tokens and Deposits WhiteLabel in Sender's Address, Must Have Prior Approval For Underlying */
+    /** Stake Tokens and Deposits XUSD in Sender's Address, Must Have Prior Approval For Underlying */
     function _mintWithBacking(
         uint256 numUnderlying,
         address recipient
@@ -814,14 +764,6 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         require(
             tokenActivated || msg.sender == this.getOwner(),
             "Token Not Activated"
-        );
-        // users token balance
-        uint256 userTokenBalance = underlying.balanceOf(msg.sender);
-
-        // ensure user has enough to send
-        require(
-            userTokenBalance > 0 && numUnderlying <= userTokenBalance,
-            "Insufficient Balance"
         );
 
         // calculate price change
@@ -831,7 +773,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         uint256 previousBacking = underlying.balanceOf(address(this));
 
         // transfer in token
-        uint256 received = _transferIn(address(underlying), numUnderlying);
+        uint256 received = _transferIn(numUnderlying);
 
         // if this is the first purchase, use new amount
         uint256 relevantBacking = previousBacking == 0
@@ -842,7 +784,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         return _mintTo(recipient, received, relevantBacking, oldPrice);
     }
 
-    /** Burns WhiteLabel Tokens And Deposits Underlying Tokens into Recipients's Address */
+    /** Burns XUSD Tokens And Deposits Underlying Tokens into Recipients's Address */
     function _sell(
         uint256 tokenAmount,
         address recipient
@@ -892,15 +834,19 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         return amountUnderlyingAsset;
     }
 
-    /** Handles Minting Logic To Create New WhiteLabel */
+    /** Handles Minting Logic To Create New XUSD */
     function _mintTo(
         address recipient,
         uint256 received,
         uint256 totalBacking,
         uint256 oldPrice
     ) internal returns (uint256) {
-        // tokens to mint with no tax
+
+        // tokens to mint
         uint256 nTokensToMint = tokensToMint(received, totalBacking);
+
+        // tokens to mint with no tax
+        uint256 nTokensToMintNoTax = ( _totalSupply * received ) / totalBacking;
 
         // whether fee was applied or not
         bool hasFee = !isTransferFeeExempt[msg.sender] && _totalSupply > 0;
@@ -912,8 +858,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         _mint(recipient, nTokensToMint);
 
         // apply fee to tax taken
-        if (hasFee) {
-            uint256 nTokensToMintNoTax = nTokensToMint * feeDenominator / mintFee;
+        if (hasFee && nTokensToMintNoTax > nTokensToMint) {
             _takeFee(nTokensToMintNoTax - nTokensToMint);
         }
 
@@ -961,7 +906,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         return currentTokenAmount - prevTokenAmount;
     }
 
-    /** Requires The Price Of WhiteLabel To Rise For The Transaction To Conclude */
+    /** Requires The Price Of XUSD To Rise For The Transaction To Conclude */
     function _requirePriceRises(uint256 oldPrice) internal {
         // Calculate Price After Transaction
         uint256 newPrice = _calculatePrice();
@@ -980,21 +925,24 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         Also accounts for potential tx fees as it notes the contract balance before and after swap 
     */
     function _transferIn(
-        address _token,
         uint256 amount
     ) internal returns (uint256) {
         require(
-            IERC20(_token).balanceOf(msg.sender) >= amount,
+            underlying.balanceOf(msg.sender) >= amount,
             "Insufficient Balance"
         );
         require(
-            IERC20(_token).allowance(msg.sender, address(this)) >= amount,
+            underlying.allowance(msg.sender, address(this)) >= amount,
             "Insufficient Allowance"
         );
-        uint before = IERC20(_token).balanceOf(address(this));
-        IERC20(_token).transferFrom(msg.sender, address(this), amount);
-        uint After = IERC20(_token).balanceOf(address(this));
+
+        // get underlying balance before and after
+        uint before = underlying.balanceOf(address(this));
+        underlying.transferFrom(msg.sender, address(this), amount);
+        uint After = underlying.balanceOf(address(this));
         require(After > before, "Error On Transfer From");
+
+        // return difference
         return After - before;
     }
 
@@ -1012,10 +960,10 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         emit Transfer(account, address(0), amount);
     }
 
-    /** Make Sure there's no PO8 Tokens in contract */
+    /** Deletes All XUSD Tokens in XUSD contract */
     function _checkGarbageCollector() internal {
         uint256 bal = _balances[address(this)];
-        if (bal > 1000) {
+        if (bal > 10_000) {
             // Track Change In Price
             uint256 oldPrice = _calculatePrice();
             // take fee
@@ -1033,7 +981,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
     //////    READ FUNCTIONS    ///////
     ///////////////////////////////////
 
-    /** Price Of WhiteLabel in Underlying With 6 Points Of Precision */
+    /** Price Of XUSD in Underlying With 6 Points Of Precision */
     function calculatePrice() external view returns (uint256) {
         return _calculatePrice();
     }
@@ -1069,7 +1017,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
     }
 
     /**
-        Amount Of Underlying To Receive For `numTokens` of WhiteLabel
+        Amount Of Underlying To Receive For `numTokens` of XUSD
      */
     function amountOut(uint256 numTokens) public view returns (uint256) {
         return ( _calculatePrice() * numTokens ) / precision;
@@ -1080,16 +1028,8 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         return amountOut(_balances[holder]);
     }
 
-    function viewAllPriceChanges() external view returns (uint256[] memory) {
-        return allPrices;
-    }
-
     function numPricePoints() external view returns (uint256) {
         return allPrices.length;
-    }
-
-    function viewAllPriceChangeTimestamps() external view returns (uint256[] memory) {
-        return allPriceTimestamps;
     }
 
     function numPricePointTimestamps() external view returns (uint256) {
@@ -1175,7 +1115,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         emit SetRouter(newRouter);
     }
 
-    /** Withdraws Tokens Incorrectly Sent To WhiteLabel */
+    /** Withdraws Tokens Incorrectly Sent To XUSD */
     function withdrawNonStableToken(IERC20 token) external onlyOwner {
         require(
             address(token) != address(underlying),
@@ -1206,7 +1146,7 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         Will Redeem Stables Tax Free On Behalf of Wallet
         Will Prevent Incorrectly 'Burnt' or Locked Up Tokens From Continuously Appreciating
      */
-    function redeemForLostAccount(address account, uint256 amount) external onlyOwner {
+    function redeemForLostAccount(address account, uint256 amount) external nonReentrant onlyOwner {
         require(account != address(0));
         require(_balances[account] > 0 && _balances[account] >= amount);
 
@@ -1284,9 +1224,12 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
         flashLoanOn = _flashLoanOn;
     }
 
+    function setSwapContract(address _swap) external onlyOwner {
+        swap = ISwap(_swap);
+    }
+
     /** Mint Tokens to Buyer */
     receive() external payable {
-        _mintWithNative(msg.sender, 0);
         _checkGarbageCollector();
     }
 
@@ -1316,22 +1259,18 @@ contract XUSD is IERC20, Ownable, ReentrancyGuard {
     event GarbageCollected(uint256 amountTokensErased);
     event Redeemed(
         address seller,
-        uint256 amountWhiteLabel,
+        uint256 amountXUSD,
         uint256 amountUnderlying
     );
     event Minted(address recipient, uint256 numTokens);
 
-    // Upgradable Contract Tracking
-    event SetMaxHoldings(uint256 maxHoldings);
-    event SetRouter(address newRouter);
-
     // Governance Tracking
     event SetPermissions(address Contract, bool feeExempt);
-    event SetMaxHoldingsExempt(address account, bool isExempt);
     event SetFees(uint mintFee, uint transferFee, uint sellFee);
+    event FeePercentageForFeeToSet(uint256 newFeePercentage);
 
     // FlashLoans
     event FlashLoan(address target, address token, uint256 amount, uint256 fee);
     event FlashLoanFeeSet(uint256 newFeeAmount);
-    event FeePercentageForFeeToSet(uint256 newFeePercentage);
+    
 }
