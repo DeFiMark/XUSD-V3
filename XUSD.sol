@@ -407,7 +407,7 @@ interface IPromiseUSD {
 contract XUSD is IERC20, Ownable, ReentrancyGuard {
 
     // token data
-    string private constant _name = "XUSD V3";
+    string private constant _name = "XUSD";
     string private constant _symbol = "XUSD";
     uint8 private constant _decimals = 18;
     uint256 private constant precision = 10**18;
